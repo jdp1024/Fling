@@ -6,6 +6,8 @@ A simple but interesting puzzle game. Several pieces on the board, you can
 fling a piece towards another to bump it off the board, the goal is only one
 piece remains.
 
+![Screenshot](screenshot.png "A screenshot")
+
 LICENSE
 -------
 This code is written by jdp1024.
@@ -19,7 +21,7 @@ using pure C (C11 standard) and Win32 APIs with multiple Windows programming
 techniques:
 
 * create windows and custom controls with DPI-awareness and theme-awareness
-* bordelress window management
+* borderless window management
 * dynamic controls layout
 * handle user input and drag-and-drop operations
 * GDI programming and resource management
