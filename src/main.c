@@ -4838,6 +4838,19 @@ static LRESULT CALLBACK FlingMainWindowProc(HWND hwnd, UINT message, WPARAM wPar
         }
         break;
 
+    case WM_NCACTIVATE:
+        if ((GetWindowLongPtrA(hwnd, GWL_STYLE) & WS_CAPTION) == 0) {
+            // Preserve activation handling without repainting the native frame.
+            return DefWindowProcA(hwnd, message, wParam, -1);
+        }
+        break;
+
+    case WM_NCPAINT:
+        if ((GetWindowLongPtrA(hwnd, GWL_STYLE) & WS_CAPTION) == 0) {
+            return 0;
+        }
+        break;
+
     case WM_NCCALCSIZE:
         if ((GetWindowLongPtrA(hwnd, GWL_STYLE) & WS_CAPTION) == 0) {
             if (IsZoomed(hwnd)) {
