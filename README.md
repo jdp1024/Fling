@@ -8,7 +8,7 @@ piece remains.
 
 ![Screenshot](screenshot.png "A screenshot")
 
-<div><video controls src="gameplay.mp4" muted="false"></video></div>
+<div><video controls src="https://github.com/user-attachments/assets/786829a7-b258-4571-8931-5b58065cf586" muted="false"></video></div>
 
 LICENSE
 -------
