@@ -8,6 +8,8 @@ piece remains.
 
 ![Screenshot](screenshot.png "A screenshot")
 
+<div><video controls src="gameplay.mp4" muted="false"></video></div>
+
 LICENSE
 -------
 This code is written by jdp1024.
