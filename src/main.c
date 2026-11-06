@@ -3821,10 +3821,12 @@ static HRESULT EnsureBoardRenderer(HWND hwnd)
     swapChainDesc.SampleDesc.Count = 1;
     swapChainDesc.SampleDesc.Quality = 0;
     swapChainDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-    swapChainDesc.BufferCount = 1;
+    swapChainDesc.BufferCount = 2;
     swapChainDesc.OutputWindow = hwnd;
     swapChainDesc.Windowed = TRUE;
-    swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+    // board presentation separated from the parent's GDI redirection surface
+    // required by borderless + DWM rounded corner
+    swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
 
     const D3D_FEATURE_LEVEL wantedFeatureLevel = D3D_FEATURE_LEVEL_11_0;
     HRESULT hr = D3D11CreateDeviceAndSwapChain(
@@ -4922,7 +4924,11 @@ static LRESULT CALLBACK FlingMainWindowProc(HWND hwnd, UINT message, WPARAM wPar
 
     case WM_SIZE:
         LayoutControls(hwnd);
-        InvalidateRect(hwnd, NULL, TRUE);
+        if ((GetWindowLongPtrA(hwnd, GWL_STYLE) & WS_CAPTION) == 0) {
+            RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+        } else {
+            InvalidateRect(hwnd, NULL, TRUE);
+        }
         return 0;
 
     case WM_GETMINMAXINFO:
@@ -5034,6 +5040,9 @@ static LRESULT CALLBACK FlingMainWindowProc(HWND hwnd, UINT message, WPARAM wPar
         break;
 
     case WM_ERASEBKGND:
+        if ((GetWindowLongPtrA(hwnd, GWL_STYLE) & WS_CAPTION) == 0) {
+            PaintScene(hwnd, (HDC)wParam);
+        }
         return 1;
 
     case WM_SETCURSOR:
