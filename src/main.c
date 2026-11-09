@@ -469,6 +469,7 @@ static int g_generatePieceCount = 0;
 static void LayoutControls(HWND hwnd);
 static int InBounds(int row, int col);
 static float GetScaledAnimationPixelsPerSecond(void);
+static float ClampUnitFloat(float value);
 static void UpdateThemeColors(void);
 static void ApplyControlTheme(void);
 static void UpdateSystemMenuThemeItem(HWND hwnd);
@@ -654,14 +655,7 @@ static int UpdateWindowsAnimationProgress(void)
     hr = g_animationManager->lpVtbl->Update(g_animationManager, timeNow, NULL);
     hr = g_animationProgressVariable->lpVtbl->GetValue(g_animationProgressVariable, &progressValue);
 
-    if (progressValue < 0.0) {
-        progressValue = 0.0;
-    }
-    if (progressValue > 1.0) {
-        progressValue = 1.0;
-    }
-
-    g_animationProgress = (float)progressValue;
+    g_animationProgress = ClampUnitFloat((float)progressValue);
     return 1;
 }
 
@@ -1197,21 +1191,6 @@ static float GetCollisionBumpOffset(float animationProgress, int collisionDistan
     }
 
     return impactShape * (float)g_cellSize * ANIMATION_COLLISION_BUMP_SCALE * proximityBoost;
-}
-
-static UINT QueryWindowDpi(HWND hwnd)
-{
-    UINT dpi;
-
-    if (hwnd != NULL) {
-        dpi = GetDpiForWindow(hwnd);
-        if (dpi != 0) {
-            return dpi;
-        }
-    }
-
-    dpi = GetDpiForSystem();
-    return dpi != 0 ? dpi : USER_DEFAULT_SCREEN_DPI;
 }
 
 static void ApplyControlFonts(void)
@@ -4334,13 +4313,7 @@ static void RenderBoardWindowInternal(BOOL presentSwapChain)
             drawProgress = g_animationProgress * 2.0f;
         }
 
-        if (drawProgress < 0.0f) {
-            drawProgress = 0.0f;
-        }
-        if (drawProgress > 1.0f) {
-            drawProgress = 1.0f;
-        }
-
+        drawProgress = ClampUnitFloat(drawProgress);
         currentLeft = fromLeft + (toLeft - fromLeft) * drawProgress;
         currentTop = fromTop + (toTop - fromTop) * drawProgress;
 
@@ -5032,7 +5005,7 @@ static LRESULT CALLBACK FlingMainWindowProc(HWND hwnd, UINT message, WPARAM wPar
             UpdateSystemMenuThemeItem(hwnd);
         }
         ApplyControlTheme();
-        UpdateDpiMetrics(hwnd, QueryWindowDpi(hwnd));
+        UpdateDpiMetrics(hwnd, GetDpiForWindow(hwnd));
         SetWindowTitleBarVisible(hwnd, g_appSettings.showTitleBar, FALSE);
         UpdateSolutionButtons();
         LoadGeneratedBoard(hwnd);
@@ -5104,7 +5077,7 @@ static LRESULT CALLBACK FlingMainWindowProc(HWND hwnd, UINT message, WPARAM wPar
                 hit = PtInRect(&windowRect, point) ? HTCLIENT : HTNOWHERE;
 
                 if (hit == HTCLIENT && (style & WS_THICKFRAME) != 0 && !IsZoomed(hwnd)) {
-                    UINT dpi = QueryWindowDpi(hwnd);
+                    UINT dpi = GetDpiForWindow(hwnd);
                     int padding = GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
                     int borderX = GetSystemMetricsForDpi(SM_CXSIZEFRAME, dpi) + padding;
                     int borderY = GetSystemMetricsForDpi(SM_CYSIZEFRAME, dpi) + padding;
@@ -5156,7 +5129,7 @@ static LRESULT CALLBACK FlingMainWindowProc(HWND hwnd, UINT message, WPARAM wPar
             SIZE minClientSize = GetMinimumClientSize();
 
             if (minMaxInfo != NULL) {
-                UINT dpi = (g_currentDpi != 0) ? g_currentDpi : QueryWindowDpi(hwnd);
+                UINT dpi = (g_currentDpi != 0) ? g_currentDpi : GetDpiForWindow(hwnd);
 
                 minWindowRect.left = 0;
                 minWindowRect.top = 0;
@@ -5587,14 +5560,8 @@ static __forceinline void EnableComCtlV6(void)
     activationContext.lpResourceName = MAKEINTRESOURCEA(1);
 
     g_comCtlActivationContext = CreateActCtxA(&activationContext);
-    if (g_comCtlActivationContext == INVALID_HANDLE_VALUE) {
-        return;
-    }
-
-    if (!ActivateActCtx(g_comCtlActivationContext, &g_comCtlActivationCookie)) {
-        ReleaseActCtx(g_comCtlActivationContext);
-        g_comCtlActivationContext = INVALID_HANDLE_VALUE;
-        g_comCtlActivationCookie = 0;
+    if (g_comCtlActivationContext != INVALID_HANDLE_VALUE) {
+        ActivateActCtx(g_comCtlActivationContext, &g_comCtlActivationCookie);
     }
 }
 
@@ -5635,7 +5602,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE prevInstance, LPSTR cmdLine, in
     g_boardWc.hbrBackground = NULL;
     RegisterClassA(&g_boardWc);
 
-    UpdateDpiMetrics(NULL, QueryWindowDpi(NULL));
+    UpdateDpiMetrics(NULL, GetDpiForSystem());
 
     RECT windowRect;
     int windowX = CW_USEDEFAULT;
