@@ -78,6 +78,8 @@ Distributed under GPLv3.
 #define TIMER_MOVE_MIDI 5
 #define TIMER_VICTORY_START 6
 #define TIMER_SOLVED_OVERLAY 7
+#define TIMER_BACKGROUND_MIDI 8
+#define MIDI_BACKGROUND_STEP_MS 300
 // Extra pause after each autoplay move finishes sounding.
 #define SOLUTION_PLAY_DELAY_MS 800
 #define VICTORY_START_DELAY_MS 500
@@ -408,6 +410,8 @@ static BOOL g_isGeneratingBoard = FALSE;
 static BOOL g_infoHighlightHoverActive = FALSE;
 static BOOL g_infoTextMouseTracking = FALSE;
 static HMIDIOUT g_midiOut = NULL;
+static UINT g_backgroundMidiStep = 0;
+static int g_backgroundCurrentNote = 0;
 static BYTE g_moveMelodyNotes[MOVE_MIDI_MAX_NOTES];
 static UINT g_moveMelodyDurations[MOVE_MIDI_MAX_NOTES];
 static UINT g_moveMelodyLength = 0;
@@ -1462,7 +1466,7 @@ static void SetWindowTitleBarVisible(HWND hwnd, BOOL visible, BOOL saveSetting)
     );
     // Windows 10 does not support the corner preference attribute.
     if (FAILED(hr) && hr != E_INVALIDARG) {
-        OutputDebugStringA("Fling: failed to set the window corner preference.\n");
+        //OutputDebugStringA("Fling: failed to set the window corner preference.\n");
     }
 
     if (saveSetting) {
@@ -1667,6 +1671,99 @@ static int EnsureVictoryMidiOutput(void)
     SendMidiMessage(0xC0, 0, 0);
     SendMidiMessage(0xB0, 7, 96);
     return 1;
+}
+
+// A compact piano arrangement of Pachelbel's public-domain Canon in D.
+// Each row spans four beats; zero holds the preceding melody note.
+static __packed const BYTE kBackgroundMelody[][4] = {
+    {78, 0, 0, 0}, {76, 0, 0, 0}, {74, 0, 0, 0}, {73, 0, 0, 0},
+    {71, 0, 0, 0}, {69, 0, 0, 0}, {71, 0, 0, 0}, {73, 0, 0, 0},
+    {74, 0, 0, 0}, {73, 0, 0, 0}, {71, 0, 0, 0}, {69, 0, 0, 0},
+    {67, 0, 0, 0}, {66, 0, 0, 0}, {67, 0, 0, 0}, {64, 0, 0, 0},
+    {74, 78, 81, 79}, {78, 74, 78, 76}, {74, 71, 74, 69}, {67, 66, 64, 62},
+    {64, 67, 66, 64}, {62, 61, 59, 57}, {55, 59, 57, 59}, {61, 62, 64, 61}
+};
+static __packed const BYTE kBackgroundChords[][4] = {
+    {50, 57, 62, 66}, {45, 57, 61, 64},
+    {47, 54, 59, 62}, {42, 54, 57, 61},
+    {43, 55, 59, 62}, {50, 57, 62, 66},
+    {43, 55, 59, 62}, {45, 57, 61, 64}
+};
+static __packed const BYTE kBackgroundDrums[] = {36, 0, 42, 0, 38, 0, 42, 0};
+
+static void StopBackgroundMidiPlayback(HWND hwnd)
+{
+    KillTimer(hwnd, TIMER_BACKGROUND_MIDI);
+    if (g_midiOut != NULL) {
+        // Only silence the background channels, never the move/victory channels.
+        SendMidiMessage(0xB2, 123, 0);
+        SendMidiMessage(0xB3, 123, 0);
+        SendMidiMessage(0xB9, 123, 0);
+    }
+    g_backgroundCurrentNote = -1;
+}
+
+static void AdvanceBackgroundMidiPlayback(void)
+{
+    SendMidiMessage(0xB9, 123, 0);
+    BYTE drum = kBackgroundDrums[g_backgroundMidiStep % _countof(kBackgroundDrums)];
+    if (drum != 0) {
+        SendMidiMessage(0x99, drum, (BYTE)(drum == 42 ? 40 : 52));
+    }
+
+    if (g_backgroundMidiStep % 4 == 0) {
+        UINT chordIndex = (g_backgroundMidiStep / 4) % _countof(kBackgroundChords);
+        SendMidiMessage(0xB3, 123, 0);
+        for (UINT i = 0; i < _countof(kBackgroundChords[0]); ++i) {
+            SendMidiMessage(0x93, kBackgroundChords[chordIndex][i], 64);
+        }
+    }
+
+    BYTE note = kBackgroundMelody[g_backgroundMidiStep / 4][g_backgroundMidiStep % 4];
+    if (note != 0) {
+        if (g_backgroundCurrentNote >= 0) {
+            SendMidiMessage(0x82, (BYTE)g_backgroundCurrentNote, 0);
+        }
+        g_backgroundCurrentNote = note;
+        SendMidiMessage(0x92, note, (BYTE)(g_backgroundMidiStep % 4 == 0 ? 86 : 78));
+    }
+    g_backgroundMidiStep = (g_backgroundMidiStep + 1) % (_countof(kBackgroundMelody) * 4);
+}
+
+static __packed const BYTE g_backgroundMidiBytes[] = {
+    0xB2, 121, 0,
+    0xC2, 0, 0,
+    0xB2, 11, 127,
+    0xB2, 7, 76,
+    0xB3, 121, 0,
+    0xC3, 0, 0,
+    0xB3, 11, 127,
+    0xB3, 7, 60,
+    0xB9, 121, 0,
+    0xB9, 11, 127,
+    0xB9, 7, 58,
+};
+
+static void StartBackgroundMidiPlayback(HWND hwnd)
+{
+    if (!EnsureVictoryMidiOutput()) {
+        return;
+    }
+
+    StopBackgroundMidiPlayback(hwnd);
+
+    int i;
+    for (i = 0; i < sizeof(g_backgroundMidiBytes) / sizeof(BYTE); i += 3)
+    {
+        SendMidiMessage(g_backgroundMidiBytes[i], g_backgroundMidiBytes[i + 1], g_backgroundMidiBytes[i + 2]);
+    }
+    g_backgroundMidiStep = 0;
+
+    if (SetTimer(hwnd, TIMER_BACKGROUND_MIDI, MIDI_BACKGROUND_STEP_MS, NULL) == 0) {
+        StopBackgroundMidiPlayback(hwnd);
+        return;
+    }
+    AdvanceBackgroundMidiPlayback();
 }
 
 static void StopMoveMidiPlayback(HWND hwnd)
@@ -4818,6 +4915,7 @@ static LRESULT CALLBACK FlingMainWindowProc(HWND hwnd, UINT message, WPARAM wPar
         SetWindowTitleBarVisible(hwnd, g_appSettings.showTitleBar, FALSE);
         UpdateSolutionButtons();
         LoadGeneratedBoard(hwnd);
+        StartBackgroundMidiPlayback(hwnd);
         return 0;
 
     case WM_SYSCOMMAND:
@@ -4865,7 +4963,6 @@ static LRESULT CALLBACK FlingMainWindowProc(HWND hwnd, UINT message, WPARAM wPar
 
                 // Exclude the off-screen resize frame and taskbars on any edge.
                 if (!GetMonitorInfoA(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &monitorInfo)) {
-                    OutputDebugStringA("Fling: failed to query the borderless window monitor work area.\n");
                     break;
                 }
                 IntersectRect(clientRect, clientRect, &monitorInfo.rcWork);
@@ -5072,6 +5169,10 @@ static LRESULT CALLBACK FlingMainWindowProc(HWND hwnd, UINT message, WPARAM wPar
         return 0;
 
     case WM_TIMER:
+        if (wParam == TIMER_BACKGROUND_MIDI) {
+            AdvanceBackgroundMidiPlayback();
+            return 0;
+        }
         if (wParam == TIMER_SOLVE) {
             KillTimer(hwnd, TIMER_SOLVE);
             if (g_solutionAutoPlaying && g_solutionReady && !g_isAnimating && g_solutionStep < g_solutionLength) {
@@ -5318,6 +5419,7 @@ static LRESULT CALLBACK FlingMainWindowProc(HWND hwnd, UINT message, WPARAM wPar
 
     case WM_DESTROY:
         SaveAppSettings(hwnd);
+        StopBackgroundMidiPlayback(hwnd);
         StopSolutionPlayback(hwnd);
         DestroyVictoryMidiOutput();
         StopWindowsAnimationManager();
@@ -5394,6 +5496,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE prevInstance, LPSTR cmdLine, in
     g_generatePieceCount = DEFAULT_GENERATE_PIECE_COUNT;
     g_moveCurrentNote = -1;
     g_victoryCurrentNote = -1;
+    g_backgroundCurrentNote = -1;
     g_instance = instance;
     LoadAppSettings();
     UpdateThemeColors();
