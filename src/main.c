@@ -85,7 +85,6 @@ Distributed under GPLv3.
 #define MIDI_BACKGROUND_END_TICK 86400
 #define MIDI_BACKGROUND_VOICE_DELAY_TICKS 3072
 #define MIDI_BACKGROUND_BASS_NOTE_TICKS 384
-// Extra pause after each autoplay move finishes sounding.
 #define SOLUTION_PLAY_DELAY_MS 800
 #define VICTORY_START_DELAY_MS 500
 #define MIDI_VICTORY_NOTE_MS 180
@@ -134,6 +133,7 @@ Distributed under GPLv3.
 #endif
 
 #define SAFE_RELEASE(ptr) do { if ((ptr) != NULL) { (ptr)->lpVtbl->Release(ptr); (ptr) = NULL; } } while (0)
+#define JUST_RELEASE(ptr) (ptr)->lpVtbl->Release(ptr);
 
 // Reduce code size of string literals by packing them into a single array
 // and using pointers to reference them.
@@ -416,6 +416,9 @@ static BOOL g_infoHighlightHoverActive = FALSE;
 static BOOL g_infoTextMouseTracking = FALSE;
 static HMIDIOUT g_midiOut = NULL;
 static DWORD g_backgroundMidiStartTick = 0;
+static DWORD g_backgroundMidiPausedElapsedMs = 0;
+static BOOL g_backgroundMidiActive = FALSE;
+static BOOL g_backgroundMidiPaused = FALSE;
 static DWORD g_backgroundMidiVoiceTick[3];
 static UINT g_backgroundMidiVoiceIndex[3];
 static int g_backgroundMidiVoiceNote[3];
@@ -489,6 +492,9 @@ static void AdvanceMoveMidiPlayback(HWND hwnd);
 static int StartMoveMidiPlayback(HWND hwnd);
 static int StartSadMoveMidiPlayback(HWND hwnd);
 static void StopVictoryMidiPlayback(HWND hwnd);
+static void AdvanceBackgroundMidiPlayback(HWND hwnd);
+static void PauseBackgroundMidiPlayback(HWND hwnd);
+static void ResumeBackgroundMidiPlayback(HWND hwnd);
 static int StartVictoryMidiPlaybackWhenReady(HWND hwnd);
 static void StopVictoryFireworks(HWND hwnd);
 static void SetSolvedOverlayVisible(HWND hwnd, BOOL visible);
@@ -632,9 +638,9 @@ static HRESULT StartWindowsAnimationSegment(int durationMs)
     hr = storyboard->lpVtbl->Schedule(storyboard, timeNow, NULL);
     hr = g_animationManager->lpVtbl->Update(g_animationManager, timeNow, NULL);
 
-    SAFE_RELEASE(moveTransition);
-    SAFE_RELEASE(resetTransition);
-    SAFE_RELEASE(storyboard);
+    JUST_RELEASE(moveTransition);
+    JUST_RELEASE(resetTransition);
+    JUST_RELEASE(storyboard);
     return hr;
 }
 
@@ -1745,10 +1751,10 @@ static void ResetBackgroundMidiPlayback(void)
 static void SendStopMidiCmd()
 {
     if (g_midiOut != NULL) {
-        SendMidiMessage(0xB2, 123, 0);
-        SendMidiMessage(0xB3, 123, 0);
-        SendMidiMessage(0xB4, 123, 0);
-        SendMidiMessage(0xB5, 123, 0);    
+        int i;
+        for (i = 0; i < 4; ++i) {
+            SendMidiMessage(0xB2 + i, 123, 0);
+        }
     }
 }
 
@@ -1757,6 +1763,47 @@ static void StopBackgroundMidiPlayback(HWND hwnd)
     KillTimer(hwnd, TIMER_BACKGROUND_MIDI);
     SendStopMidiCmd();
     ResetBackgroundMidiPlayback();
+    g_backgroundMidiActive = FALSE;
+    g_backgroundMidiPaused = FALSE;
+    g_backgroundMidiPausedElapsedMs = 0;
+}
+
+static void PauseBackgroundMidiPlayback(HWND hwnd)
+{
+    if (!g_backgroundMidiActive || g_backgroundMidiPaused) {
+        return;
+    }
+
+    AdvanceBackgroundMidiPlayback(hwnd);
+    g_backgroundMidiPausedElapsedMs = GetTickCount() - g_backgroundMidiStartTick;
+    KillTimer(hwnd, TIMER_BACKGROUND_MIDI);
+    SendStopMidiCmd();
+    g_backgroundMidiPaused = TRUE;
+}
+
+static void ResumeBackgroundMidiPlayback(HWND hwnd)
+{
+    if (!g_backgroundMidiActive || !g_backgroundMidiPaused) {
+        return;
+    }
+
+    g_backgroundMidiStartTick = GetTickCount() - g_backgroundMidiPausedElapsedMs;
+    g_backgroundMidiPausedElapsedMs = 0;
+    g_backgroundMidiPaused = FALSE;
+
+    for (UINT i = 0; i < 3; ++i) {
+        if (g_backgroundMidiVoiceNote[i] >= 0) {
+            SendMidiMessage((BYTE)(0x90 | (2 + i)), (BYTE)g_backgroundMidiVoiceNote[i], 97);
+        }
+    }
+    if (g_backgroundMidiBassIndex > 0) {
+        BYTE noteIndex = kBackgroundMidiBass[(g_backgroundMidiBassIndex - 1) % 8];
+        SendMidiMessage(0x95, kBackgroundMidiNotes[noteIndex], 79);
+    }
+
+    if (SetTimer(hwnd, TIMER_BACKGROUND_MIDI, MIDI_BACKGROUND_STEP_MS, NULL) == 0) {
+        StopBackgroundMidiPlayback(hwnd);
+    }
 }
 
 static void AdvanceBackgroundMidiPlayback(HWND hwnd)
@@ -1834,6 +1881,7 @@ static void StartBackgroundMidiPlayback(HWND hwnd)
         StopBackgroundMidiPlayback(hwnd);
         return;
     }
+    g_backgroundMidiActive = TRUE;
     AdvanceBackgroundMidiPlayback(hwnd);
 }
 
@@ -1991,6 +2039,7 @@ static void StopVictoryMidiPlayback(HWND hwnd)
     }
 
     g_victoryMelodyIndex = 0;
+    ResumeBackgroundMidiPlayback(hwnd);
     StopVictoryFireworks(hwnd);
 }
 
@@ -2072,6 +2121,7 @@ static int StartVictoryMidiPlayback(HWND hwnd)
         return 0;
     }
 
+    PauseBackgroundMidiPlayback(hwnd);
     AdvanceVictoryMidiPlayback(hwnd);
     return 1;
 }
@@ -3685,7 +3735,7 @@ static HRESULT CreateBoardSquareTextureView(COLORREF baseColor, BOOL darkVariant
     hr = g_d3dDevice->lpVtbl->CreateTexture2D(g_d3dDevice, &textureDesc, &textureData, &texture);
     hr = g_d3dDevice->lpVtbl->CreateShaderResourceView(g_d3dDevice, (ID3D11Resource *)texture, NULL, outTextureView);
 
-    SAFE_RELEASE(texture);
+    JUST_RELEASE(texture);
     return hr;
 }
 
@@ -3755,7 +3805,7 @@ static HRESULT CreateLoadingTextTextureView(ID3D11ShaderResourceView **outTextur
     hr = g_d3dDevice->lpVtbl->CreateTexture2D(g_d3dDevice, &textureDesc, &textureData, &texture);
     hr = g_d3dDevice->lpVtbl->CreateShaderResourceView(g_d3dDevice, (ID3D11Resource *)texture, NULL, outTextureView);
 
-    SAFE_RELEASE(texture);
+    JUST_RELEASE(texture);
     SelectObject(memDC, oldFont);
     SelectObject(memDC, oldBmp);
     DeleteObject(dib);
@@ -3824,7 +3874,7 @@ static HRESULT CreateBoardRenderTarget(void)
 
     hr = g_d3dSwapChain->lpVtbl->GetBuffer(g_d3dSwapChain, 0, &IID_ID3D11Texture2D, (void **)&backBuffer);
     hr = g_d3dDevice->lpVtbl->CreateRenderTargetView(g_d3dDevice, (ID3D11Resource *)backBuffer, NULL, &g_d3dRenderTargetView);
-    SAFE_RELEASE(backBuffer);
+    JUST_RELEASE(backBuffer);
     return hr;
 }
 
@@ -3949,8 +3999,8 @@ static HRESULT EnsureBoardShaders(void)
         );
     }
 
-    SAFE_RELEASE(vertexShaderBlob);
-    SAFE_RELEASE(pixelShaderBlob);
+    JUST_RELEASE(vertexShaderBlob);
+    JUST_RELEASE(pixelShaderBlob);
 
     if (g_d3dVertexBuffer == NULL) {
         D3D11_BUFFER_DESC bufferDesc;
@@ -4764,15 +4814,15 @@ static HRESULT SaveBoardImageToFile(const char *path, const GUID *containerForma
         g_d3dSwapChain->lpVtbl->Present(g_d3dSwapChain, 1, 0);
     }
 
-    SAFE_RELEASE(converter);
-    SAFE_RELEASE(bitmap);
-    SAFE_RELEASE(propertyBag);
-    SAFE_RELEASE(frame);
-    SAFE_RELEASE(encoder);
-    SAFE_RELEASE(stream);
-    SAFE_RELEASE(wicFactory);
-    SAFE_RELEASE(stagingTexture);
-    SAFE_RELEASE(backBuffer);
+    JUST_RELEASE(converter);
+    JUST_RELEASE(bitmap);
+    JUST_RELEASE(propertyBag);
+    JUST_RELEASE(frame);
+    JUST_RELEASE(encoder);
+    JUST_RELEASE(stream);
+    JUST_RELEASE(wicFactory);
+    JUST_RELEASE(stagingTexture);
+    JUST_RELEASE(backBuffer);
     return hr;
 }
 
